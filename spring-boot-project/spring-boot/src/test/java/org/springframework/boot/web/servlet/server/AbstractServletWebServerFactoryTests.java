@@ -879,7 +879,7 @@ public abstract class AbstractServletWebServerFactoryTests {
 		AbstractServletWebServerFactory factory = getFactory();
 		factory.getJsp().setInitParameters(initParameters);
 		this.webServer = factory.getWebServer();
-		Assumptions.assumeFalse(getJspServlet() == null);
+		Assumptions.assumeFalse(getJspServlet() == null, "server does not support JSPs (Undertow)");
 		JspServlet jspServlet = getJspServlet();
 		assertThat(jspServlet.getInitParameter("a")).isEqualTo("alpha");
 	}
@@ -888,7 +888,7 @@ public abstract class AbstractServletWebServerFactoryTests {
 	void jspServletIsNotInDevelopmentModeByDefault() throws Exception {
 		AbstractServletWebServerFactory factory = getFactory();
 		this.webServer = factory.getWebServer();
-		Assumptions.assumeFalse(getJspServlet() == null);
+		Assumptions.assumeFalse(getJspServlet() == null, "server does not support JSPs (Undertow)");
 		JspServlet jspServlet = getJspServlet();
 		EmbeddedServletOptions options = (EmbeddedServletOptions) ReflectionTestUtils.getField(jspServlet, "options");
 		assertThat(options.getDevelopment()).isFalse();

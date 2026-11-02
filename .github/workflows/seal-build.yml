@@ -1,0 +1,99 @@
+# Build and test spring-boot (core module) on GitHub Actions.
+# Upstream 2.2.x builds on Concourse (ci/scripts/build-project.sh) with JDK 8 and
+# Maven; it ships no GitHub Actions workflow, so this one mirrors that job for
+# the spring-boot-project/spring-boot module.
+name: seal-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Surefire test selector (space or comma separated); empty runs the full suite"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      TEST_FILTER: ${{ inputs.test-filter }}
+      MAVEN_ARGS_COMMON: -B -V -Ddisable.checks=true -Dmaven.wagon.http.retryHandler.count=5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "8"
+
+      - name: Install Maven 3.9.5
+        run: |
+          curl -fsSL --retry 5 -o /tmp/maven.tar.gz https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.5/apache-maven-3.9.5-bin.tar.gz
+          sudo tar -xzf /tmp/maven.tar.gz -C /opt
+          echo "/opt/apache-maven-3.9.5/bin" >> "$GITHUB_PATH"
+
+      - name: Configure Maven mirror (repo.spring.io requires auth now)
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<'EOF'
+          <settings>
+            <mirrors>
+              <mirror>
+                <id>central-all</id>
+                <mirrorOf>*</mirrorOf>
+                <url>https://repo.maven.apache.org/maven2</url>
+              </mirror>
+            </mirrors>
+          </settings>
+          EOF
+
+      - name: Install root build pom
+        run: mvn $MAVEN_ARGS_COMMON -N clean install
+
+      - name: Install module dependencies
+        run: mvn $MAVEN_ARGS_COMMON clean install -pl spring-boot-project/spring-boot -am -Dmaven.test.skip=true
+
+      - name: Build and test spring-boot
+        run: |
+          if [ -n "$TEST_FILTER" ]; then
+            mvn $MAVEN_ARGS_COMMON verify -pl spring-boot-project/spring-boot -Dtest="${TEST_FILTER// /,}" -DfailIfNoTests=false
+          else
+            mvn $MAVEN_ARGS_COMMON verify -pl spring-boot-project/spring-boot
+          fi
+
+      - name: Surefire summary
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          tot = fail = err = skip = 0
+          skipped = []
+          for f in sorted(glob.glob('spring-boot-project/spring-boot/target/surefire-reports/TEST-*.xml')):
+              r = ET.parse(f).getroot()
+              tot += int(r.get('tests', 0)); fail += int(r.get('failures', 0))
+              err += int(r.get('errors', 0)); skip += int(r.get('skipped', 0))
+              for tc in r.iter('testcase'):
+                  s = tc.find('skipped')
+                  if s is not None:
+                      skipped.append('%s.%s: %s' % (tc.get('classname'), tc.get('name'), s.get('message') or (s.text or '').strip() or 'no message'))
+          print('SUREFIRE SUMMARY: tests=%d passed=%d failures=%d errors=%d skipped=%d' % (tot, tot - fail - err - skip, fail, err, skip))
+          for s in skipped:
+              print('SKIPPED ' + s)
+          for c in ['org.springframework.boot.system.ApplicationTempTests',
+                    'org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactoryTests',
+                    'org.springframework.boot.web.embedded.jetty.JettyServletWebServerFactoryTests',
+                    'org.springframework.boot.web.embedded.undertow.UndertowServletWebServerFactoryTests',
+                    'org.springframework.boot.web.embedded.netty.NettyReactiveWebServerFactoryTests']:
+              for f in glob.glob('spring-boot-project/spring-boot/target/surefire-reports/TEST-%s.xml' % c):
+                  r = ET.parse(f).getroot()
+                  print('PATCHED-PATH %s tests=%s failures=%s errors=%s skipped=%s' % (c, r.get('tests'), r.get('failures'), r.get('errors'), r.get('skipped')))
+          EOF
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-boot-jar
+          path: spring-boot-project/spring-boot/target/spring-boot-2.2.4.RELEASE.jar
+          if-no-files-found: error
